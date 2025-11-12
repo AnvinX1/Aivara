@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+sqlalchemy
+pydantic
+python-jose[cryptography]
+passlib[bcrypt]
+Pillow
+pytesseract
+pdfplumber
+python-multipart
+requests
+chromadb==0.5.5
+sentence-transformers==3.0.1
+numpy==1.26.4
