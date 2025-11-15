@@ -17,6 +17,8 @@ class ReportResponse(ReportBase):
     analysis_result_json: str | None = None
     doctor_notes: str | None = None
     review_status: str
+    ai_approval_status: str = "pending"
+    doctor_approval_timestamp: datetime | None = None
     hemoglobin: float | None = None
     wbc: float | None = None
     platelets: float | None = None
@@ -26,5 +28,6 @@ class ReportResponse(ReportBase):
         from_attributes = True
 
 class ReportReview(BaseModel):
+    ai_approval_status: str = Field(..., pattern="^(approved|rejected|needs_review)$")
     doctor_notes: str
-    review_status: str # e.g., 'reviewed', 'pending'
+    review_status: str = Field(..., pattern="^(pending|under_review|reviewed|rejected)$")

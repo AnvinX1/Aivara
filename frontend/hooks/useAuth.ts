@@ -12,9 +12,11 @@ export function useAuth() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const storedUser = getUser();
-    setUserState(storedUser);
-    setLoading(false);
+    if (typeof window !== 'undefined') {
+      const storedUser = getUser();
+      setUserState(storedUser);
+      setLoading(false);
+    }
   }, []);
 
   const login = useCallback(async (email: string, password: string) => {
@@ -60,9 +62,16 @@ export function useAuth() {
   }, []);
 
   const logout = useCallback(() => {
-    removeAuthToken();
-    setUserState(null);
-    router.push('/login');
+    if (typeof window !== 'undefined') {
+      const userStr = localStorage.getItem('user');
+      const isDoctor = userStr ? (JSON.parse(userStr)?.role === 'doctor') : false;
+      
+      removeAuthToken();
+      setUserState(null);
+      
+      // Redirect to appropriate login page based on user role
+      router.push(isDoctor ? '/doctor/login' : '/login');
+    }
   }, [router]);
 
   return {

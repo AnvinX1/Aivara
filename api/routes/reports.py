@@ -14,8 +14,13 @@ if _project_root not in sys.path:
 from dependencies import get_db, get_current_user
 from models.user import User
 from models.report import Report
+from models.report_sharing import ReportSharing
+from models.doctor import Doctor
 from schemas.report import ReportCreate, ReportResponse
+from schemas.report_sharing import ReportSharingCreate, ReportSharingResponse
+from datetime import datetime
 from services.ocr_service import extract_text_from_report
+from services.notification_service import notify_doctor_new_report
 from services.parser_service import parse_health_markers
 from services.ai_engine import analyze_health_markers, read_report_with_qwen3vl, get_medicine_suggestions, get_women_health_suggestions
 from services.storage_service import save_report_file
@@ -157,6 +162,8 @@ def get_report_by_id(
         "analysis_result_json": report.analysis_result_json,
         "doctor_notes": report.doctor_notes,
         "review_status": report.review_status,
+        "ai_approval_status": report.ai_approval_status if hasattr(report, 'ai_approval_status') else "pending",
+        "doctor_approval_timestamp": report.doctor_approval_timestamp if hasattr(report, 'doctor_approval_timestamp') else None,
         "hemoglobin": report.hemoglobin,
         "wbc": report.wbc,
         "platelets": report.platelets,
@@ -226,3 +233,117 @@ def get_women_health_suggestions_endpoint(
         return {"suggestions": suggestions, "model": "edi"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to generate women's health suggestions: {e}")
+
+@router.post("/{report_id}/share", response_model=ReportSharingResponse, status_code=status.HTTP_201_CREATED)
+def share_report_to_doctor(
+    report_id: int,
+    sharing_data: ReportSharingCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Patient shares a report with a doctor.
+    Creates a ReportSharing record and updates the report status.
+    """
+    # Verify report belongs to current user
+    report = db.query(Report).filter(Report.id == report_id, Report.user_id == current_user.id).first()
+    if report is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not found")
+    
+    # Verify doctor exists and is active
+    doctor = db.query(Doctor).filter(Doctor.id == sharing_data.doctor_id, Doctor.is_active == True).first()
+    if doctor is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Doctor not found or inactive")
+    
+    # Check if already shared to this doctor
+    existing_sharing = db.query(ReportSharing).filter(
+        ReportSharing.report_id == report_id,
+        ReportSharing.doctor_id == sharing_data.doctor_id,
+        ReportSharing.status.in_(["pending", "sent", "under_review"])
+    ).first()
+    
+    if existing_sharing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Report already shared to this doctor and is pending review"
+        )
+    
+    # Create report sharing record
+    report_sharing = ReportSharing(
+        report_id=report_id,
+        patient_id=current_user.id,
+        doctor_id=sharing_data.doctor_id,
+        patient_message=sharing_data.patient_message,
+        status="sent",
+        sent_at=datetime.utcnow()
+    )
+    
+    db.add(report_sharing)
+    
+    # Update report status
+    report.review_status = "pending"
+    db.add(report)
+    
+    db.commit()
+    db.refresh(report_sharing)
+    
+    # Notify doctor (async notification)
+    try:
+        notify_doctor_new_report(report_id, sharing_data.doctor_id)
+    except Exception as e:
+        print(f"Warning: Failed to send notification: {e}")
+    
+    return report_sharing
+
+@router.get("/shared", response_model=list[ReportSharingResponse])
+def get_shared_reports(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Get all reports shared by the current patient with doctor information.
+    """
+    sharings = db.query(ReportSharing).filter(
+        ReportSharing.patient_id == current_user.id
+    ).order_by(ReportSharing.created_at.desc()).all()
+    
+    return sharings
+
+@router.put("/{report_id}/cancel-sharing/{sharing_id}", response_model=ReportSharingResponse)
+def cancel_report_sharing(
+    report_id: int,
+    sharing_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Cancel a report sharing if it's still pending.
+    """
+    # Verify report belongs to current user
+    report = db.query(Report).filter(Report.id == report_id, Report.user_id == current_user.id).first()
+    if report is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not found")
+    
+    # Get sharing record
+    sharing = db.query(ReportSharing).filter(
+        ReportSharing.id == sharing_id,
+        ReportSharing.report_id == report_id,
+        ReportSharing.patient_id == current_user.id
+    ).first()
+    
+    if sharing is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sharing record not found")
+    
+    # Only allow cancellation if status is pending or sent
+    if sharing.status not in ["pending", "sent"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot cancel sharing with status: {sharing.status}"
+        )
+    
+    sharing.status = "rejected"  # Mark as rejected/cancelled
+    db.add(sharing)
+    db.commit()
+    db.refresh(sharing)
+    
+    return sharing

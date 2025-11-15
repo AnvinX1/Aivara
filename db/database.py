@@ -30,6 +30,9 @@ Base = declarative_base()
 from models.user import User
 from models.doctor import Doctor
 from models.report import Report
+from models.hospital import Hospital
+from models.report_sharing import ReportSharing
+from models.forecast import Forecast
 
 # Function to create all tables
 def create_db_tables():

@@ -28,9 +28,16 @@ class DoctorBase(BaseModel):
 
 class DoctorCreate(DoctorBase):
     password: str = Field(..., min_length=8, write_only=True)
+    hospital_id: int | None = None
+    phone: str | None = None
+    registration_number: str | None = None
 
 class DoctorResponse(DoctorBase):
     id: int
+    hospital_id: int | None = None
+    phone: str | None = None
+    registration_number: str | None = None
+    is_active: bool = True
     created_at: datetime
 
     class Config:

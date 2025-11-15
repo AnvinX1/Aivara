@@ -15,7 +15,9 @@ class Report(Base):
     upload_timestamp = Column(DateTime, default=datetime.utcnow)
     analysis_result_json = Column(Text)
     doctor_notes = Column(Text)
-    review_status = Column(String, default="pending") # e.g., 'pending', 'reviewed'
+    review_status = Column(String, default="pending") # e.g., 'pending', 'under_review', 'reviewed', 'rejected'
+    ai_approval_status = Column(String, default="pending")  # pending, approved, rejected, needs_review
+    doctor_approval_timestamp = Column(DateTime, nullable=True)
 
     # Extracted Health Markers
     hemoglobin = Column(Float)
