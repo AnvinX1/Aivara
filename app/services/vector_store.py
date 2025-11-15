@@ -9,7 +9,13 @@ import numpy as np
 if not hasattr(np, 'float_'):
     np.float_ = np.float64
 
-import chromadb
+try:
+    import chromadb
+    CHROMADB_AVAILABLE = True
+except ImportError:
+    chromadb = None
+    CHROMADB_AVAILABLE = False
+    print("Warning: chromadb not installed. Vector store features will be disabled.")
 
 # Add project root directory to sys.path within vector_store.py for its own imports.
 _current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -18,7 +24,15 @@ if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
 import config
-from app.services.embeddings_service import get_embedding
+
+# Optional import - handle gracefully if embeddings service fails
+try:
+    from app.services.embeddings_service import get_embedding
+except Exception as e:
+    print(f"Warning: Failed to import embeddings_service: {e}")
+    print("Vector store features will be disabled. Please fix dependencies or use OpenRouter API.")
+    def get_embedding(text: str):
+        raise RuntimeError("Embeddings service not available. Fix dependencies or configure OpenRouter API.")
 
 # Global variables for ChromaDB client and collection
 _chroma_client = None
@@ -26,6 +40,8 @@ _chroma_collection = None
 
 def _get_chroma_collection():
     global _chroma_client, _chroma_collection
+    if not CHROMADB_AVAILABLE:
+        raise RuntimeError("ChromaDB is not installed. Please install chromadb to use vector store features.")
     if _chroma_collection is None:
         print(f"Initializing ChromaDB persistent client in {config.VECTOR_DIR}...")
         _chroma_client = chromadb.PersistentClient(path=config.VECTOR_DIR)

@@ -33,9 +33,11 @@ def get_embedding(text: str) -> List[float]:
         RuntimeError: If embedding generation fails with both OpenRouter and local model.
     """
 
-    # Try OpenRouter API first
+    # Try OpenRouter API first (if model specified)
+    # Note: Free embedding models are limited on OpenRouter
+    # If not configured, will fall back to local SentenceTransformer model (free)
     openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
-    openrouter_embed_model = os.getenv("OPENROUTER_EMBED_MODEL")
+    openrouter_embed_model = os.getenv("OPENROUTER_EMBED_MODEL", None)  # Default to None to use free local model
     openrouter_base_url_for_embed = "https://openrouter.ai/api/v1/embeddings"
 
     if openrouter_api_key and openrouter_embed_model:

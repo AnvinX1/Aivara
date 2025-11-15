@@ -240,7 +240,7 @@ else:
                     report_data.append({
                         "ID": report["id"],
                         "Report Name": report["report_name"],
-                        "Created At": report["created_at"],
+                        "Created At": report.get("upload_timestamp", report.get("created_at", "N/A")),
                         "Hemoglobin": report.get("hemoglobin", "N/A"),
                         "WBC": report.get("wbc", "N/A"),
                         "Platelets": report.get("platelets", "N/A"),
@@ -285,7 +285,7 @@ else:
                         st.subheader("Report Information")
                         st.write(f"**Report ID:** {report['id']}")
                         st.write(f"**Report Name:** {report['report_name']}")
-                        st.write(f"**Created At:** {report['created_at']}")
+                        st.write(f"**Created At:** {report.get('upload_timestamp', report.get('created_at', 'N/A'))}")
                         st.write(f"**File Path:** {report.get('file_path', 'N/A')}")
                     
                     with col2:

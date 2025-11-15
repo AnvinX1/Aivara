@@ -1,13 +1,25 @@
 
 import os
+import sys
 import json
 import requests
-from typing import Dict, Any
+from typing import Dict, Any, Optional
+
+# Add project root directory to sys.path for imports
+_current_dir = os.path.dirname(os.path.abspath(__file__))
+_project_root = os.path.dirname(_current_dir)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
+import config
 
 # LLM Client Configuration (using OpenRouter)
+# Using free models (Llama/Mistral) by default
 # Environment variables for OpenRouter API
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "google/gemini-flash-1.5")
+# Default to free Llama model - can be overridden with env var
+# Options: meta-llama/Llama-3.2-3B-Instruct-free, meta-llama/Llama-3.1-8B-Instruct-free, mistralai/mistral-7b-instruct:free
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "meta-llama/Llama-3.2-3B-Instruct-free")
 OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1/chat/completions")
 
 def _call_llm(prompt: str) -> str | None:
@@ -26,7 +38,6 @@ def _call_llm(prompt: str) -> str | None:
     }
     data = {
         "model": OPENROUTER_MODEL,
-        "prompt": prompt,
         "messages": [
             {"role": "user", "content": prompt}
         ],
@@ -49,17 +60,28 @@ def _call_llm(prompt: str) -> str | None:
         print(f"Error processing LLM API response: {e}")
         return None
 
-def make_explanation(parsed_data: Dict[str, Any], context_text: str | None = None) -> Dict[str, Any]:
+def make_explanation(parsed_data: Dict[str, Any], context_text: str | None = None, 
+                     historical_context: str | None = None) -> Dict[str, Any]:
     """
     Generates an LLM-based explanation for the health markers.
+    
+    Args:
+        parsed_data: Dictionary of health markers and their values
+        context_text: Context from the current report (e.g., analysis summary)
+        historical_context: Historical context from patient's previous reports (RAG-retrieved)
     """
     prompt_parts = [
         "You are an AI assistant specialized in explaining medical report results to a patient in a simple, calm, and reassuring manner. Avoid medical jargon where possible.",
         "Provide a brief summary and simple explanation for the following health markers. Focus on whether they are within normal limits and what that generally means."
     ]
 
+    if historical_context:
+        prompt_parts.append("Here is relevant information from the patient's previous medical reports that may help provide context:")
+        prompt_parts.append(historical_context)
+        prompt_parts.append("Use this historical context to provide more informed explanations, especially if there are trends or changes to note.")
+
     if context_text:
-        prompt_parts.append(f"Here is some additional context from the report: {context_text}")
+        prompt_parts.append(f"Here is some additional context from the current report: {context_text}")
 
     marker_details = []
     for marker, value in parsed_data.items():
@@ -83,11 +105,17 @@ def make_explanation(parsed_data: Dict[str, Any], context_text: str | None = Non
     else:
         return {"llm_explanation": "Could not generate an LLM explanation at this time."}
 
-def analyze_health_markers(markers: Dict[str, float | None]) -> Dict[str, Any]:
+def analyze_health_markers(markers: Dict[str, float | None], patient_id: Optional[str] = None, 
+                          query: Optional[str] = None) -> Dict[str, Any]:
     """
     Analyzes a given set of health markers based on predefined rules and thresholds.
     Returns a dictionary with analysis results, including a summary and specific observations.
-    Also includes an LLM-generated explanation.
+    Also includes an LLM-generated explanation with optional RAG context from historical reports.
+    
+    Args:
+        markers: Dictionary of health markers and their values
+        patient_id: Optional patient ID for retrieving historical context via RAG
+        query: Optional query string for RAG context retrieval (if None, generated from markers)
     """
     analysis_results = {
         "summary": "No significant anomalies detected.",
@@ -126,8 +154,44 @@ def analyze_health_markers(markers: Dict[str, float | None]) -> Dict[str, Any]:
     if abnormalities_found:
         analysis_results["summary"] = "Potential anomalies detected in one or more health markers. Please consult a doctor."
 
-    # Generate LLM explanation
-    llm_explanation_data = make_explanation(markers, context_text=analysis_results["summary"])
+    # Retrieve historical context using RAG if patient_id is provided
+    historical_context = None
+    if patient_id:
+        try:
+            from app.services.vector_store import patient_context as get_patient_context
+            
+            # Generate query from markers if not provided
+            if query is None:
+                marker_query_parts = []
+                for marker, value in markers.items():
+                    if value is not None:
+                        marker_query_parts.append(f"{marker.replace('_', ' ')} {value}")
+                if marker_query_parts:
+                    query = f"Previous reports with {', '.join(marker_query_parts)}"
+                else:
+                    query = "Previous medical reports and health history"
+            
+            # Retrieve historical context
+            historical_context = get_patient_context(patient_id=patient_id, query=query, k=config.RAG_TOP_K)
+            
+            if not historical_context:
+                # Fallback: try a more general query
+                historical_context = get_patient_context(
+                    patient_id=patient_id, 
+                    query="Previous medical reports and test results", 
+                    k=config.RAG_TOP_K
+                )
+        except Exception as e:
+            # Log error but don't fail analysis if RAG retrieval fails
+            print(f"Warning: Failed to retrieve historical context for patient {patient_id}: {e}")
+            historical_context = None
+
+    # Generate LLM explanation with historical context
+    llm_explanation_data = make_explanation(
+        markers, 
+        context_text=analysis_results["summary"],
+        historical_context=historical_context
+    )
     analysis_results.update(llm_explanation_data)
 
     return analysis_results
