@@ -1,14 +1,38 @@
 
 import os
+import sys
 import requests
-from typing import List
-from sentence_transformers import SentenceTransformer
+from typing import List, Optional
+from dotenv import load_dotenv
 
-# Global variable to store the local SentenceTransformer model
+# Load environment variables from .env file
+_current_dir = os.path.dirname(os.path.abspath(__file__))
+_project_root = os.path.dirname(os.path.dirname(_current_dir)) # Points to /content/aivara_app/aivara-backend
+load_dotenv(os.path.join(_project_root, '.env'))
+
+# Try to import SentenceTransformer for fallback
+try:
+    from sentence_transformers import SentenceTransformer
+    SENTENCE_TRANSFORMERS_AVAILABLE = True
+except ImportError:
+    SentenceTransformer = None
+    SENTENCE_TRANSFORMERS_AVAILABLE = False
+    print("Warning: sentence-transformers not installed. Will use Ollama embeddings only.")
+
+# Import config and Ollama service
+sys.path.insert(0, _project_root)
+import config
+from services.ollama_service import get_embedding_via_ollama
+
+# Global variable to store the local SentenceTransformer model (fallback)
 _local_sentence_transformer_model = None
 
 def _get_local_model():
+    """Gets the local SentenceTransformer model for fallback."""
     global _local_sentence_transformer_model
+    if not SENTENCE_TRANSFORMERS_AVAILABLE:
+        return None
+    
     if _local_sentence_transformer_model is None:
         print("Loading local SentenceTransformer model 'sentence-transformers/all-MiniLM-L6-v2'...")
         try:
@@ -21,7 +45,7 @@ def _get_local_model():
 
 def get_embedding(text: str) -> List[float]:
     """
-    Generates text embeddings using OpenRouter API or a local SentenceTransformer model.
+    Generates text embeddings using Ollama embeddinggemma:latest model, with fallback to SentenceTransformer.
 
     Args:
         text (str): The input text to embed.
@@ -30,54 +54,34 @@ def get_embedding(text: str) -> List[float]:
         List[float]: The embedding vector.
 
     Raises:
-        RuntimeError: If embedding generation fails with both OpenRouter and local model.
+        RuntimeError: If embedding generation fails with both Ollama and local model.
     """
-
-    # Try OpenRouter API first (if model specified)
-    # Note: Free embedding models are limited on OpenRouter
-    # If not configured, will fall back to local SentenceTransformer model (free)
-    openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
-    openrouter_embed_model = os.getenv("OPENROUTER_EMBED_MODEL", None)  # Default to None to use free local model
-    openrouter_base_url_for_embed = "https://openrouter.ai/api/v1/embeddings"
-
-    if openrouter_api_key and openrouter_embed_model:
-        headers = {
-            "Authorization": f"Bearer {openrouter_api_key}",
-            "Content-Type": "application/json"
-        }
-        payload = {
-            "model": openrouter_embed_model,
-            "input": text
-        }
-        try:
-            print(f"Attempting to get embedding from OpenRouter with model: {openrouter_embed_model}...")
-            response = requests.post(openrouter_base_url_for_embed, headers=headers, json=payload, timeout=10)
-            response.raise_for_status() # Raise an exception for HTTP errors
-            result = response.json()
-            if "data" in result and len(result["data"]) > 0 and "embedding" in result["data"][0]:
-                print("Embedding successfully retrieved from OpenRouter.")
-                return result["data"][0]["embedding"]
-            else:
-                print(f"OpenRouter API returned an unexpected format: {result}")
-        except requests.exceptions.RequestException as e:
-            print(f"OpenRouter API request failed: {e}")
-        except Exception as e:
-            print(f"Error processing OpenRouter API response: {e}")
-
-    print("Falling back to local SentenceTransformer model...")
-    # Fallback to local SentenceTransformer model
-    model = _get_local_model()
-    if model is not False: # Check if loading didn't fail permanently
-        try:
-            embedding = model.encode(text).tolist()
-            print("Embedding successfully generated using local model.")
+    # Try Ollama API first (using embeddinggemma:latest)
+    try:
+        embedding = get_embedding_via_ollama(text)
+        if embedding:
+            print(f"Embedding successfully retrieved from Ollama (embeddinggemma:latest).")
             return embedding
-        except Exception as e:
-            print(f"Error generating embedding with local model: {e}")
+    except Exception as e:
+        print(f"Ollama embeddings API request failed: {e}")
+    
+    # Fallback to local SentenceTransformer model
+    print("Falling back to local SentenceTransformer model...")
+    if SENTENCE_TRANSFORMERS_AVAILABLE:
+        model = _get_local_model()
+        if model and model is not False: # Check if loading didn't fail permanently
+            try:
+                embedding = model.encode(text).tolist()
+                print("Embedding successfully generated using local SentenceTransformer model.")
+                return embedding
+            except Exception as e:
+                print(f"Error generating embedding with local model: {e}")
+        else:
+            print("Local SentenceTransformer model failed to load previously.")
     else:
-        print("Local SentenceTransformer model failed to load previously.")
+        print("SentenceTransformers not available as fallback.")
 
-    raise RuntimeError("Failed to generate embedding: No API key/model or local model failure.")
+    raise RuntimeError("Failed to generate embedding: Ollama unavailable and SentenceTransformer fallback failed.")
 
 if __name__ == '__main__':
     # Example usage

@@ -19,53 +19,69 @@ def parse_health_markers(text: str) -> Dict[str, Any]:
     normalized_text = re.sub(r'\s+', ' ', normalized_text)
 
     # Hemoglobin
-    # Examples: hemoglobin 14.5 g/dl, hb 12.1, hgb: 13.0
+    # Examples: hemoglobin 14.5 g/dl, hb 12.1, hgb: 13.0, hb=14.2, hemoglobin: 15.0
     hb_patterns = [
-        r'hemoglobin\W*(\d+\.?\d*)[^\d]*g/?[dl|l]',
-        r'hb\W*(\d+\.?\d*)',
-        r'hgb\W*(\d+\.?\d*)'
+        r'hemoglobin\W*[:=]?\W*(\d+\.?\d*)[^\d]*g/?[dl|l]',
+        r'hb\W*[:=]?\W*(\d+\.?\d*)',
+        r'hgb\W*[:=]?\W*(\d+\.?\d*)',
+        r'h\s*b\W*[:=]?\W*(\d+\.?\d*)',  # Handle "H B" with space
     ]
     for pattern in hb_patterns:
         match = re.search(pattern, normalized_text)
         if match:
-            markers['hemoglobin'] = float(match.group(1))
-            break
+            try:
+                markers['hemoglobin'] = float(match.group(1))
+                break
+            except ValueError:
+                continue
 
     # WBC (White Blood Cell Count)
-    # Examples: wbc 7.2 x10^3/uL, white blood cell 8.0
+    # Examples: wbc 7.2 x10^3/uL, white blood cell 8.0, wbc: 6.5, wbc=7.0
     wbc_patterns = [
-        r'wbc\W*(\d+\.?\d*)',
-        r'white blood cells?\W*(\d+\.?\d*)'
+        r'wbc\W*[:=]?\W*(\d+\.?\d*)',
+        r'white blood cells?\W*[:=]?\W*(\d+\.?\d*)',
+        r'w\s*b\s*c\W*[:=]?\W*(\d+\.?\d*)',  # Handle "W B C" with spaces
     ]
     for pattern in wbc_patterns:
         match = re.search(pattern, normalized_text)
         if match:
-            markers['wbc'] = float(match.group(1))
-            break
+            try:
+                markers['wbc'] = float(match.group(1))
+                break
+            except ValueError:
+                continue
 
     # Platelets
-    # Examples: platelets 250 x10^3/uL, plts 280
+    # Examples: platelets 250 x10^3/uL, plts 280, platelets: 300, plt=250
     platelets_patterns = [
-        r'platelets?\W*(\d+\.?\d*)',
-        r'plts?\W*(\d+\.?\d*)'
+        r'platelets?\W*[:=]?\W*(\d+\.?\d*)',
+        r'plts?\W*[:=]?\W*(\d+\.?\d*)',
+        r'plt\W*[:=]?\W*(\d+\.?\d*)',  # Handle "plt" separately
     ]
     for pattern in platelets_patterns:
         match = re.search(pattern, normalized_text)
         if match:
-            markers['platelets'] = float(match.group(1))
-            break
+            try:
+                markers['platelets'] = float(match.group(1))
+                break
+            except ValueError:
+                continue
 
     # RBC (Red Blood Cell Count)
-    # Examples: rbc 5.0 x10^6/uL, red blood cell 4.8
+    # Examples: rbc 5.0 x10^6/uL, red blood cell 4.8, rbc: 5.2, rbc=4.9
     rbc_patterns = [
-        r'rbc\W*(\d+\.?\d*)',
-        r'red blood cells?\W*(\d+\.?\d*)'
+        r'rbc\W*[:=]?\W*(\d+\.?\d*)',
+        r'red blood cells?\W*[:=]?\W*(\d+\.?\d*)',
+        r'r\s*b\s*c\W*[:=]?\W*(\d+\.?\d*)',  # Handle "R B C" with spaces
     ]
     for pattern in rbc_patterns:
         match = re.search(pattern, normalized_text)
         if match:
-            markers['rbc'] = float(match.group(1))
-            break
+            try:
+                markers['rbc'] = float(match.group(1))
+                break
+            except ValueError:
+                continue
 
     return markers
 

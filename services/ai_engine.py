@@ -4,6 +4,7 @@ import sys
 import json
 import requests
 from typing import Dict, Any, Optional
+from dotenv import load_dotenv
 
 # Add project root directory to sys.path for imports
 _current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -11,54 +12,17 @@ _project_root = os.path.dirname(_current_dir)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
+# Load environment variables from .env file
+load_dotenv(os.path.join(_project_root, '.env'))
+
 import config
-
-# LLM Client Configuration (using OpenRouter)
-# Using free models (Llama/Mistral) by default
-# Environment variables for OpenRouter API
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-# Default to free Llama model - can be overridden with env var
-# Options: meta-llama/Llama-3.2-3B-Instruct-free, meta-llama/Llama-3.1-8B-Instruct-free, mistralai/mistral-7b-instruct:free
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "meta-llama/Llama-3.2-3B-Instruct-free")
-OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1/chat/completions")
-
-def _call_llm(prompt: str) -> str | None:
-    """
-    Calls the configured LLM API (OpenRouter) with the given prompt.
-    """
-    if not OPENROUTER_API_KEY:
-        print("OPENROUTER_API_KEY not set. Cannot call LLM API.")
-        return None
-
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json",
-        # "HTTP-Referer": "YOUR_APP_URL", # Optional: Replace with your actual app URL
-        # "X-Title": "YOUR_APP_NAME", # Optional: Replace with your actual app name
-    }
-    data = {
-        "model": OPENROUTER_MODEL,
-        "messages": [
-            {"role": "user", "content": prompt}
-        ],
-        "temperature": 0.7
-    }
-
-    try:
-        response = requests.post(OPENROUTER_BASE_URL, headers=headers, json=data, timeout=30)
-        response.raise_for_status()  # Raise an exception for HTTP errors
-        result = response.json()
-        if result and "choices" in result and len(result["choices"]) > 0:
-            return result["choices"][0]["message"]["content"]
-        else:
-            print(f"LLM API returned an unexpected format: {result}")
-            return None
-    except requests.exceptions.RequestException as e:
-        print(f"LLM API request failed: {e}")
-        return None
-    except Exception as e:
-        print(f"Error processing LLM API response: {e}")
-        return None
+from services.ollama_service import (
+    call_ollama_llm,
+    get_model_for_explanation,
+    get_model_for_report_reading,
+    get_model_for_medicine,
+    get_model_for_women_health
+)
 
 def make_explanation(parsed_data: Dict[str, Any], context_text: str | None = None, 
                      historical_context: str | None = None) -> Dict[str, Any]:
@@ -98,12 +62,45 @@ def make_explanation(parsed_data: Dict[str, Any], context_text: str | None = Non
     # print(full_prompt)
     # print("\n------------------")
 
-    explanation_text = _call_llm(full_prompt)
+    # Use llama3.2 for general health explanations
+    model = get_model_for_explanation()
+    explanation_text = call_ollama_llm(full_prompt, model)
 
     if explanation_text:
         return {"llm_explanation": explanation_text}
     else:
-        return {"llm_explanation": "Could not generate an LLM explanation at this time."}
+        # Fallback explanation when LLM is not available
+        # Provide a basic explanation based on the markers
+        fallback_parts = []
+        found_markers = []
+        for marker, value in parsed_data.items():
+            if value is not None:
+                found_markers.append((marker.replace('_', ' ').capitalize(), value))
+        
+        if found_markers:
+            fallback_parts.append("Based on your health markers:")
+            for marker_name, value in found_markers:
+                # Reference ranges for basic explanation
+                ranges = {
+                    "Hemoglobin": {"normal": "12.0-17.5 g/dL", "low": 12.0, "high": 17.5},
+                    "Wbc": {"normal": "4.0-11.0 x10³/uL", "low": 4.0, "high": 11.0},
+                    "Platelets": {"normal": "150-450 x10³/uL", "low": 150, "high": 450},
+                    "Rbc": {"normal": "4.5-5.9 x10⁶/uL", "low": 4.5, "high": 5.9},
+                }
+                marker_range = ranges.get(marker_name, {})
+                if marker_range:
+                    status = "within normal range" if (marker_range.get("low", 0) <= value <= marker_range.get("high", 999)) else "outside normal range"
+                    fallback_parts.append(f"• {marker_name}: {value} (Normal: {marker_range.get('normal', 'N/A')}) - {status}")
+                else:
+                    fallback_parts.append(f"• {marker_name}: {value}")
+            fallback_parts.append("\nPlease consult with your healthcare provider for a detailed interpretation of these results. This is a basic summary and not a substitute for professional medical advice.")
+        else:
+            fallback_parts.append("No health markers were found in this report. Please ensure the report contains standard blood test results (Hemoglobin, WBC, Platelets, RBC).")
+        
+        fallback_explanation = "\n".join(fallback_parts)
+        fallback_explanation += "\n\nNote: LLM-powered explanation is not available. Please ensure Ollama is running and the model is accessible."
+        
+        return {"llm_explanation": fallback_explanation}
 
 def analyze_health_markers(markers: Dict[str, float | None], patient_id: Optional[str] = None, 
                           query: Optional[str] = None) -> Dict[str, Any]:
@@ -196,21 +193,146 @@ def analyze_health_markers(markers: Dict[str, float | None], patient_id: Optiona
 
     return analysis_results
 
+def read_report_with_qwen3vl(extracted_text: str, health_markers: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Reads and interprets medical reports using qwen3-vl:2b model.
+    
+    Args:
+        extracted_text: The OCR-extracted text from the medical report
+        health_markers: Dictionary of health markers and their values
+    
+    Returns:
+        Dictionary with report reading insights and interpretations
+    """
+    prompt_parts = [
+        "You are a medical report analysis AI specialized in reading and interpreting medical reports.",
+        "Analyze the following medical report text and provide detailed insights about:",
+        "1. Overall health status based on the report",
+        "2. Key findings and observations",
+        "3. Any abnormalities or areas of concern",
+        "4. Recommendations based on the report content",
+        "\nMedical Report Text:",
+        extracted_text[:3000],  # Limit text length
+        "\nHealth Markers Found:",
+    ]
+    
+    marker_details = []
+    for marker, value in health_markers.items():
+        if value is not None:
+            marker_details.append(f"{marker.replace('_', ' ').capitalize()}: {value}")
+        else:
+            marker_details.append(f"{marker.replace('_', ' ').capitalize()}: Not found")
+    
+    prompt_parts.append("\n".join(marker_details))
+    prompt_parts.append("\nProvide a comprehensive analysis of this medical report:")
+    
+    full_prompt = "\n".join(prompt_parts)
+    
+    # Use qwen3-vl:2b for report reading
+    model = get_model_for_report_reading()
+    analysis_text = call_ollama_llm(full_prompt, model)
+    
+    if analysis_text:
+        return {
+            "report_reading_insights": analysis_text,
+            "analysis_model": model
+        }
+    else:
+        return {
+            "report_reading_insights": "Unable to generate report reading insights. Please ensure Ollama is running and qwen3-vl:2b model is available.",
+            "analysis_model": model
+        }
+
+def get_medicine_suggestions(health_markers: Dict[str, Any], condition: str = None) -> str:
+    """
+    Gets allopathic medicine suggestions using medbot model.
+    
+    Args:
+        health_markers: Dictionary of health markers and their values
+        condition: Optional specific medical condition to focus on
+    
+    Returns:
+        String with allopathic medicine suggestions
+    """
+    prompt_parts = [
+        "You are a medical AI specialized in providing allopathic medicine suggestions.",
+        "Based on the health markers provided, suggest appropriate allopathic medications from a database of 10000+ medications.",
+        "Include: medication names, typical dosages, and when they might be appropriate.",
+        "Important: These are general suggestions only. Always consult with a qualified healthcare provider before taking any medication.",
+        "\nHealth Markers:",
+    ]
+    
+    marker_details = []
+    for marker, value in health_markers.items():
+        if value is not None:
+            marker_details.append(f"{marker.replace('_', ' ').capitalize()}: {value}")
+        else:
+            marker_details.append(f"{marker.replace('_', ' ').capitalize()}: Not found")
+    
+    prompt_parts.append("\n".join(marker_details))
+    
+    if condition:
+        prompt_parts.append(f"\nSpecific Condition: {condition}")
+    
+    prompt_parts.append("\nProvide allopathic medicine suggestions based on these markers:")
+    
+    full_prompt = "\n".join(prompt_parts)
+    
+    # Use medbot model for medicine suggestions
+    model = get_model_for_medicine()
+    suggestions = call_ollama_llm(full_prompt, model)
+    
+    if suggestions:
+        return suggestions
+    else:
+        return "Unable to generate medicine suggestions. Please ensure Ollama is running and medbot model is available. Always consult with a qualified healthcare provider before taking any medication."
+
+def get_women_health_suggestions(health_markers: Dict[str, Any], context: str = None) -> str:
+    """
+    Gets women's healthcare suggestions using edi model.
+    
+    Args:
+        health_markers: Dictionary of health markers and their values
+        context: Optional additional context about women's health concerns
+    
+    Returns:
+        String with women-specific healthcare suggestions
+    """
+    prompt_parts = [
+        "You are a women's healthcare AI specialized in providing healthcare suggestions for women.",
+        "Based on the health markers provided, provide women-specific healthcare suggestions, considerations, and recommendations.",
+        "Consider factors like: hormonal health, reproductive health, bone health, cardiovascular health in women, and other women-specific concerns.",
+        "Important: These are general suggestions only. Always consult with a qualified healthcare provider for personalized advice.",
+        "\nHealth Markers:",
+    ]
+    
+    marker_details = []
+    for marker, value in health_markers.items():
+        if value is not None:
+            marker_details.append(f"{marker.replace('_', ' ').capitalize()}: {value}")
+        else:
+            marker_details.append(f"{marker.replace('_', ' ').capitalize()}: Not found")
+    
+    prompt_parts.append("\n".join(marker_details))
+    
+    if context:
+        prompt_parts.append(f"\nAdditional Context: {context}")
+    
+    prompt_parts.append("\nProvide women-specific healthcare suggestions based on these markers:")
+    
+    full_prompt = "\n".join(prompt_parts)
+    
+    # Use edi model for women's health suggestions
+    model = get_model_for_women_health()
+    suggestions = call_ollama_llm(full_prompt, model)
+    
+    if suggestions:
+        return suggestions
+    else:
+        return "Unable to generate women's health suggestions. Please ensure Ollama is running and edi model is available. Always consult with a qualified healthcare provider for personalized advice."
+
 if __name__ == '__main__':
-    print("--- Testing analyze_health_markers with LLM explanation ---")
-
-    # Mock LLM API Key for local testing if not set
-    if not os.getenv("OPENROUTER_API_KEY"):
-        os.environ["OPENROUTER_API_KEY"] = "sk-mock-key" # Set a mock key if not present
-    # Restore original key later if needed
-    original_openrouter_key = os.getenv("OPENROUTER_API_KEY")
-    original_openrouter_model = os.getenv("OPENROUTER_MODEL")
-    original_openrouter_base_url = os.getenv("OPENROUTER_BASE_URL")
-
-    # Set mock values for testing purposes if they are not already set
-    os.environ["OPENROUTER_API_KEY"] = "sk-or-your-actual-openrouter-key"
-    os.environ["OPENROUTER_MODEL"] = "google/gemini-flash-1.5"
-    os.environ["OPENROUTER_BASE_URL"] = "https://openrouter.ai/api/v1/chat/completions"
+    print("--- Testing analyze_health_markers with Ollama LLM explanation ---")
 
     # Test Case 1: All markers normal
     normal_markers = {"hemoglobin": 14.5, "wbc": 7.0, "platelets": 300.0, "rbc": 5.2}
@@ -243,17 +365,3 @@ if __name__ == '__main__':
     print(f"LLM Explanation: {abnormal_analysis_2.get('llm_explanation')}")
 
     print("\nAll analyze_health_markers test cases completed.")
-
-    # Restore original environment variables if they were set
-    if original_openrouter_key is not None:
-        os.environ["OPENROUTER_API_KEY"] = original_openrouter_key
-    else:
-        del os.environ["OPENROUTER_API_KEY"]
-    if original_openrouter_model is not None:
-        os.environ["OPENROUTER_MODEL"] = original_openrouter_model
-    else:
-        del os.environ["OPENROUTER_MODEL"]
-    if original_openrouter_base_url is not None:
-        os.environ["OPENROUTER_BASE_URL"] = original_openrouter_base_url
-    else:
-        del os.environ["OPENROUTER_BASE_URL"]

@@ -2,6 +2,7 @@
 import os
 import sys
 from typing import List, Dict, Any
+from dotenv import load_dotenv
 
 # Monkey-patch numpy to handle `np.float_` removal for chromadb compatibility
 # This MUST be done before chromadb is imported.
@@ -22,6 +23,9 @@ _current_dir = os.path.dirname(os.path.abspath(__file__))
 _project_root = os.path.dirname(os.path.dirname(_current_dir)) # Points to /content/aivara_app/aivara-backend
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
+
+# Load environment variables from .env file
+load_dotenv(os.path.join(_project_root, '.env'))
 
 import config
 

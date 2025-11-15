@@ -17,7 +17,7 @@ from models.report import Report
 from schemas.report import ReportResponse
 from services.ocr_service import extract_text_from_report
 from services.parser_service import parse_health_markers
-from services.ai_engine import analyze_health_markers
+from services.ai_engine import analyze_health_markers, read_report_with_qwen3vl
 from services.text_chunking_service import chunk_text_for_vector_store
 from app.services.vector_store import upsert_docs
 
@@ -74,12 +74,20 @@ def reanalyze_report(
     if marker_query_parts:
         query = f"Previous reports with {', '.join(marker_query_parts)}"
 
-    # Perform analysis with RAG context (if available)
+    # Perform analysis with RAG context (llama3.2 for explanations)
     analysis_results = analyze_health_markers(
         markers=health_markers,
         patient_id=str(report.user_id),
         query=query
     )
+
+    # Generate report reading insights using qwen3-vl:2b (with error handling)
+    try:
+        report_reading_insights = read_report_with_qwen3vl(extracted_text, health_markers)
+        analysis_results.update(report_reading_insights)
+    except Exception as e:
+        print(f"Warning: Failed to generate report reading insights during re-analysis: {e}")
+        # Continue without report reading insights
 
     # Update report with new analysis results
     report.analysis_result_json = json.dumps(analysis_results)
